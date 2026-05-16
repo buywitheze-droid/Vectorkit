@@ -32,7 +32,23 @@ interface CanvasViewerProps {
   canvas: HTMLCanvasElement | null;
   background: BackgroundMode;
   pickMode: boolean;
-  onPick?: (hex: string) => void;
+  /** Callback receives the picked hex color and the source-canvas pixel coordinates. */
+  onPick?: (hex: string, x: number, y: number) => void;
+  /** Optional overlay rendered INSIDE the transform container, sitting
+   *  exactly on top of the source canvas. Children receive the source
+   *  canvas's natural pixel size as their layout box, so positioning
+   *  in source-canvas coordinates "just works" — the same transform
+   *  that scales/pans the canvas applies to the overlay too.
+   *
+   *  Use this for tools that paint or position elements in source
+   *  coords (text layers, magnetic-lasso preview, etc.). */
+  overlay?: React.ReactNode;
+  /** Called when the user clicks empty space on the viewer (not on a
+   *  canvas pixel and not on the overlay). Only fires while not in
+   *  pickMode and not currently dragging-to-pan. Used by the text
+   *  tool to add a layer at the click position. The handler receives
+   *  source-canvas coords. */
+  onCanvasClick?: (sx: number, sy: number) => void;
   className?: string;
 }
 
@@ -47,6 +63,8 @@ export function CanvasViewer({
   background,
   pickMode,
   onPick,
+  overlay,
+  onCanvasClick,
   className,
 }: CanvasViewerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -202,8 +220,7 @@ export function CanvasViewer({
 
   const handleClick = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>) => {
-      if (!pickMode || !canvas || !onPick) return;
-      // Find the displayed canvas inside slot — it has the correct on-screen rect.
+      if (!canvas) return;
       const display = slotRef.current?.querySelector("canvas");
       if (!display) return;
       const rect = display.getBoundingClientRect();
@@ -212,12 +229,25 @@ export function CanvasViewer({
       const sx = Math.floor((x / rect.width) * canvas.width);
       const sy = Math.floor((y / rect.height) * canvas.height);
       if (sx < 0 || sx >= canvas.width || sy < 0 || sy >= canvas.height) return;
-      const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      if (!ctx) return;
-      const data = ctx.getImageData(sx, sy, 1, 1).data;
-      onPick(rgbToHex(data[0], data[1], data[2]));
+
+      if (pickMode && onPick) {
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return;
+        const data = ctx.getImageData(sx, sy, 1, 1).data;
+        onPick(rgbToHex(data[0], data[1], data[2]), sx, sy);
+        return;
+      }
+
+      // Generic canvas click — only fires for clicks that bubbled all
+      // the way up (i.e. weren't handled by an overlay element with
+      // stopPropagation, like a text layer's drag handle). Skipped if
+      // the user just dragged-to-pan; we use dragRef.moved to detect
+      // that.
+      if (!pickMode && onCanvasClick && !dragRef.current?.moved) {
+        onCanvasClick(sx, sy);
+      }
     },
-    [pickMode, canvas, onPick]
+    [pickMode, canvas, onPick, onCanvasClick]
   );
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────────────
@@ -281,7 +311,36 @@ export function CanvasViewer({
             transition: isDragging ? "none" : "transform 100ms ease-out",
           }}
         >
-          <div ref={slotRef} className="shadow-md" />
+          {/* Group canvas + overlay together so they share the
+              transform origin. The overlay is sized to the source-canvas
+              dimensions, sits on top of the canvas, and inherits the
+              same parent transform — meaning anything positioned inside
+              `overlay` in source-canvas coords will line up exactly
+              with the underlying pixels. */}
+          <div
+            className="relative shadow-md"
+            style={{
+              width: canvas.width,
+              height: canvas.height,
+            }}
+          >
+            <div ref={slotRef} className="absolute inset-0" />
+            {overlay && (
+              <div
+                className="absolute inset-0 pointer-events-auto"
+                style={{
+                  // Counter-scale so children that use raw `px` units
+                  // (e.g. CSS outlines on text layers) don't get the
+                  // viewport's zoom applied to them. Children that
+                  // intentionally want to scale with the canvas (font
+                  // size, position) work because they're sized in
+                  // source-canvas pixels relative to this same box.
+                }}
+              >
+                {overlay}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

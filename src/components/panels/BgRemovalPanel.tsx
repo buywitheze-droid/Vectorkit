@@ -1,13 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Pipette, Shield, Sparkles, Wand2 } from "lucide-react";
+import { Loader2, Pipette, Plus, Shield, Sparkles, Trash2, Wand2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Label } from "@/components/ui/Label";
 import { Slider } from "@/components/ui/Slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/Tabs";
 import { rgbToHex } from "@/lib/image/canvas";
 import { cn } from "@/lib/utils";
+import { type BgRemovalPreset } from "@/lib/presets";
+import {
+  deleteCustomPreset,
+  getAllPresets,
+  isCustomPreset,
+} from "@/lib/customPresets";
 
 export interface DtfFinishOptions {
   /** Snap edge alpha to 0 or 255 so every printed pixel is fully opaque. */
@@ -41,6 +47,10 @@ interface BgRemovalPanelProps {
   isProcessing: boolean;
   aiProgress: { stage: string; pct: number } | null;
   disabled?: boolean;
+  /** Open the preset trainer modal. */
+  onOpenTrainer?: () => void;
+  /** Bumped by parent when a custom preset is saved/deleted, to force re-fetch from localStorage. */
+  presetsRefreshKey?: number;
 }
 
 const COLOR_PRESETS = [
@@ -58,6 +68,8 @@ export function BgRemovalPanel({
   isProcessing,
   aiProgress,
   disabled,
+  onOpenTrainer,
+  presetsRefreshKey = 0,
 }: BgRemovalPanelProps) {
   const [tab, setTab] = useState<"color" | "ai">("color");
   const [color, setColor] = useState("#ffffff");
@@ -94,6 +106,24 @@ export function BgRemovalPanel({
     onPickColorMode(next);
   };
 
+  /**
+   * Apply a preset: load every control from the preset AND immediately fire
+   * the chromakey so it's truly one-click. Users can still tweak afterward
+   * (the controls reflect what was applied) and Ctrl+Z reverts cleanly.
+   */
+  const applyPreset = (preset: BgRemovalPreset) => {
+    const p = preset.params;
+    setColor(p.color);
+    setTolerance(p.tolerance);
+    setStrategy(p.strategy);
+    setEdgeFeather(p.edgeFeather);
+    setSolidEdges(p.finish.solidEdges);
+    setAlphaThreshold(p.finish.alphaThreshold);
+    setChoke(p.finish.choke);
+    setDespill(p.finish.despill);
+    void onApplyChromakey(p);
+  };
+
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v as "color" | "ai")}>
       <TabsList>
@@ -108,6 +138,13 @@ export function BgRemovalPanel({
       </TabsList>
 
       <TabsContent value="color" className="space-y-4 pt-4">
+        <QuickPresets
+          onApply={applyPreset}
+          onOpenTrainer={onOpenTrainer}
+          disabled={disabled || isProcessing}
+          refreshKey={presetsRefreshKey}
+        />
+
         <div>
           <Label>Background Color</Label>
           <div className="mt-2 flex items-center gap-2">
@@ -432,6 +469,109 @@ function DtfFinishControls({
           </div>
         </label>
       )}
+    </div>
+  );
+}
+
+function QuickPresets({
+  onApply,
+  onOpenTrainer,
+  disabled,
+  refreshKey,
+}: {
+  onApply: (preset: BgRemovalPreset) => void;
+  onOpenTrainer?: () => void;
+  disabled?: boolean;
+  refreshKey: number;
+}) {
+  const [hovered, setHovered] = useState<BgRemovalPreset | null>(null);
+  const [presets, setPresets] = useState<BgRemovalPreset[]>([]);
+
+  // Reload presets whenever parent bumps the refresh key (after a save/delete).
+  useEffect(() => {
+    setPresets(getAllPresets());
+  }, [refreshKey]);
+
+  const handleDelete = (id: string) => {
+    deleteCustomPreset(id);
+    setPresets(getAllPresets());
+  };
+
+  return (
+    <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
+        <Zap className="h-3.5 w-3.5 text-primary" />
+        Quick Presets
+        <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+          One-click apply
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {presets.map((p) => {
+          const custom = isCustomPreset(p);
+          return (
+            <div key={p.id} className="relative group">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onApply(p)}
+                onMouseEnter={() => setHovered(p)}
+                onMouseLeave={() => setHovered(null)}
+                onFocus={() => setHovered(p)}
+                onBlur={() => setHovered(null)}
+                title={p.description}
+                className={cn(
+                  "text-[11px] px-2 py-1 rounded-md border transition-all cursor-pointer",
+                  custom
+                    ? "border-accent/50 bg-accent/10 hover:border-accent hover:bg-accent/20"
+                    : "border-border bg-card hover:border-primary hover:bg-primary/10 hover:shadow-sm",
+                  "disabled:opacity-50 disabled:cursor-not-allowed",
+                  "flex items-center gap-1.5",
+                  custom && "pr-5"
+                )}
+              >
+                <span aria-hidden>{p.icon}</span>
+                {p.name}
+              </button>
+              {custom && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(p.id);
+                  }}
+                  className="absolute right-0.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-destructive/20 cursor-pointer"
+                  title="Delete this custom preset"
+                >
+                  <Trash2 className="h-3 w-3 text-destructive" />
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {onOpenTrainer && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={onOpenTrainer}
+            title="Open the preset trainer — load test images, critique results, save a custom preset"
+            className={cn(
+              "text-[11px] px-2 py-1 rounded-md border border-dashed transition-all cursor-pointer",
+              "border-primary/40 text-primary hover:border-primary hover:bg-primary/10",
+              "disabled:opacity-50 disabled:cursor-not-allowed",
+              "flex items-center gap-1.5"
+            )}
+          >
+            <Plus className="h-3 w-3" />
+            Train new
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground leading-snug min-h-[2.4em]">
+        {hovered
+          ? hovered.description
+          : "Hover a preset to see what it does. Click to apply with DTF-ready settings."}
+      </p>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   Check,
   Download,
   Image as ImageIcon,
+  LifeBuoy,
   Maximize2,
   Move,
   Redo2,
@@ -33,6 +34,8 @@ import { ResizePanel, type ResizeParams } from "@/components/panels/ResizePanel"
 import { TransformPanel } from "@/components/panels/TransformPanel";
 import { EffectsPanel } from "@/components/panels/EffectsPanel";
 import { EnhancePanel } from "@/components/panels/EnhancePanel";
+import { RepairPanel, type RepairParams } from "@/components/panels/RepairPanel";
+import { PresetTrainer } from "@/components/PresetTrainer";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { AccordionSection } from "@/components/ui/Accordion";
@@ -66,9 +69,16 @@ import {
   replaceColor,
   sepia as sepiaFn,
 } from "@/lib/image/effects";
+import { restoreColor } from "@/lib/image/restore";
 import { downloadBlob, formatBytes } from "@/lib/utils";
 
-type Section = "background" | "enhance" | "transform" | "effects" | "resize";
+type Section =
+  | "background"
+  | "repair"
+  | "enhance"
+  | "transform"
+  | "effects"
+  | "resize";
 
 const MAX_HISTORY = 20;
 
@@ -89,6 +99,8 @@ export function Editor() {
   const [pickedColor, setPickedColor] = useState<string | null>(null);
   const [detection, setDetection] = useState<DetectionResult | null>(null);
   const [confirmStartOver, setConfirmStartOver] = useState(false);
+  const [trainerOpen, setTrainerOpen] = useState(false);
+  const [presetsRefreshKey, setPresetsRefreshKey] = useState(0);
 
   const originalEntry = history[0] ?? null;
   const currentEntry = historyIndex >= 0 ? history[historyIndex] : null;
@@ -501,6 +513,44 @@ export function Editor() {
     [currentCanvas, runSync]
   );
 
+  // ─── Repair handler ────────────────────────────────────────────────────
+
+  const handleRepair = useCallback(
+    async (params: RepairParams) => {
+      if (!currentCanvas || !originalEntry) return;
+      try {
+        await runProcessing(async () => {
+          const { canvas, pixelsRestored } = restoreColor(
+            currentCanvas,
+            originalEntry.canvas,
+            params
+          );
+          if (pixelsRestored === 0) {
+            toast.info("No matching pixels to restore", {
+              description:
+                "Try increasing color match range or search radius, or pick a different color.",
+            });
+            return;
+          }
+          pushHistory(canvas, `Restored ${params.color.toUpperCase()}`);
+          toast.success(
+            `Restored ${pixelsRestored.toLocaleString()} pixel${pixelsRestored === 1 ? "" : "s"}`,
+            {
+              description:
+                params.mode === "solid"
+                  ? "Filled as one solid color — perfect for clean text."
+                  : "Restored from original — shading preserved.",
+            }
+          );
+        });
+      } catch (e) {
+        console.error(e);
+        toast.error("Restore failed");
+      }
+    },
+    [currentCanvas, originalEntry, pushHistory, runProcessing]
+  );
+
   const handleNewImage = useCallback(() => {
     setFile(null);
     setHistory([]);
@@ -550,6 +600,7 @@ export function Editor() {
     }
     const last = history[history.length - 1].label;
     if (last.includes("BG")) sectionUsed.current.add("background");
+    else if (last.startsWith("Restored")) sectionUsed.current.add("repair");
     else if (last.includes("Enhanced")) sectionUsed.current.add("enhance");
     else if (
       last.includes("Cropped") ||
@@ -668,6 +719,24 @@ export function Editor() {
               pickedColor={pickedColor}
               isProcessing={isProcessing}
               aiProgress={aiProgress}
+              onOpenTrainer={() => setTrainerOpen(true)}
+              presetsRefreshKey={presetsRefreshKey}
+            />
+          </AccordionSection>
+
+          <AccordionSection
+            open={openSection === "repair"}
+            onToggle={() => toggleSection("repair")}
+            title="Repair Design"
+            icon={<LifeBuoy className="h-4 w-4" />}
+            badge={sectionBadge("repair")}
+          >
+            <RepairPanel
+              onApply={handleRepair}
+              onPickColorMode={setPickColorMode}
+              pickedColor={pickedColor}
+              isProcessing={isProcessing}
+              hasOriginal={!!originalEntry}
             />
           </AccordionSection>
 
@@ -796,6 +865,17 @@ export function Editor() {
         destructive
         onConfirm={handleStartOver}
         onCancel={() => setConfirmStartOver(false)}
+      />
+
+      <PresetTrainer
+        open={trainerOpen}
+        initialSample={
+          currentCanvas && file
+            ? { name: file.name, canvas: currentCanvas }
+            : null
+        }
+        onClose={() => setTrainerOpen(false)}
+        onPresetSaved={() => setPresetsRefreshKey((k) => k + 1)}
       />
     </div>
   );
